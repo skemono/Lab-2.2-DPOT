@@ -1,9 +1,12 @@
 #include <stdio.h>
 #include <pthread.h>
+#include <time.h>
+#include <stdlib.h>
 
-#define N 5
+#define FILOSOFOS_POR_DEFECTO 5
+#define DURACION_SEGUNDOS_POR_DEFECTO 15
 
-// Implementación manual de mutex (spinlock)
+
 
 typedef struct {
     volatile int locked;
@@ -23,59 +26,49 @@ void my_mutex_unlock(my_mutex *m) {
     __sync_lock_release(&m->locked);
 }
 
-my_mutex palillos[N];
+my_mutex* palillos;
 
 // Estados
 // 0 = Pensando
-// 1 = Tiene Uno
+// 1 = HAMBRIENTO
 // 2 = Comiendo
 
-int estado[N];
+int* estado;
+int num_filosofos = FILOSOFOS_POR_DEFECTO;
+int duracion_segundos = DURACION_SEGUNDOS_POR_DEFECTO;
 my_mutex print_lock;
+volatile int ejecutando = 1;
+time_t inicio_programa;
 
 void pensar() {
-    for (volatile long i = 0; i < 2100000000; i++);
+    for (volatile long i = 0; i < 450000000; i++);
 }
 
+const char* estado_a_texto(int e) {
+    if (e == 0) return "PENSANDO";
+    if (e == 1) return "HAMBRIENTO";
+    return "COMIENDO";
+}
 
-void mostrar_estado() {
+void imprimir_resumen_estados() {
+    printf("[RESUMEN] ");
+    for (int i = 0; i < num_filosofos; i++) {
+        printf("F%d=%s", i, estado_a_texto(estado[i]));
+        if (i < num_filosofos - 1) {
+            printf(" | ");
+        }
+    }
+    printf("\n");
+}
+
+void log_evento(int id, const char* evento) {
 
     my_mutex_lock(&print_lock);
 
-    printf("\033[H\033[J");  // Limpiar pantalla
-
-    printf("=====================================\n");
-    printf("        MESA DE FILOSOFOS\n");
-    printf("=====================================\n\n");
-    printf("Estados:\n");
-    printf("0 = PENSANDO\n");
-    printf("1 = TIENE UNO\n");
-    printf("2 = COMIENDO\n");
-    printf("=====================================\n\n");
-
-    printf("              (%d)\n", estado[0]);
-    printf("        (%d)           (%d)\n",
-           estado[4], estado[1]);
-    printf("              MESA\n");
-    printf("        (%d)           (%d)\n",
-           estado[3], estado[2]);
-
-    printf("\n-------------------------------------\n");
-
-    for (int i = 0; i < N; i++) {
-        printf("Filosofo %d: ", i);
-
-        if (estado[i] == 0)
-            printf("PENSANDO");
-        else if (estado[i] == 1)
-            printf("TIENE UNO");
-        else if (estado[i] == 2)
-            printf("COMIENDO");
-
-        printf("\n");
-    }
-
-    printf("=====================================\n");
+    long transcurrido = (long)(time(NULL) - inicio_programa);
+    printf("[t=%2lds] Filosofo %d -> %s\n", transcurrido, id, evento);
+    imprimir_resumen_estados();
+    printf("--------------------------------------------------\n");
 
     my_mutex_unlock(&print_lock);
 }
@@ -86,48 +79,103 @@ void* filosofo(void* arg) {
     int id = *(int*)arg;
 
     int izquierda = id;
-    int derecha = (id + 1) % N;
+    int derecha = (id + 1) % num_filosofos;
 
     // Orden total: primero el menor índice
     int primero = (izquierda < derecha) ? izquierda : derecha;
     int segundo = (izquierda < derecha) ? derecha : izquierda;
 
-    while (1) {
+    while (ejecutando) {
 
         // Pensando
         estado[id] = 0;
-        mostrar_estado();
+        log_evento(id, "PENSANDO");
         pensar();
+
+        if (!ejecutando) {
+            break;
+        }
 
         // Hambriento
         estado[id] = 1;
-        mostrar_estado();
+        log_evento(id, "HAMBRIENTO (intenta tomar palillos)");
 
         // Tomar palillos
         my_mutex_lock(&palillos[primero]);
+        log_evento(id, "TOMO primer palillo");
         my_mutex_lock(&palillos[segundo]);
+        log_evento(id, "TOMO segundo palillo");
+
+        if (!ejecutando) {
+            my_mutex_unlock(&palillos[segundo]);
+            my_mutex_unlock(&palillos[primero]);
+            break;
+        }
 
         // Comiendo
         estado[id] = 2;
-        mostrar_estado();
+        log_evento(id, "COMIENDO");
         pensar();
 
         // Soltar palillos
         my_mutex_unlock(&palillos[segundo]);
         my_mutex_unlock(&palillos[primero]);
+        log_evento(id, "SUELTA palillos");
     }
+
+    estado[id] = 0;
+    log_evento(id, "TERMINA ejecucion del hilo");
 
     return NULL;
 }
 
 
-int main() {
+int main(int argc, char* argv[]) {
 
-    pthread_t hilos[N];
-    int ids[N];
+    if (argc >= 2) {
+        int valor = atoi(argv[1]);
+        if (valor > 0) {
+            duracion_segundos = valor;
+        }
+    }
+
+    if (argc >= 3) {
+        int valor = atoi(argv[2]);
+        if (valor >= 2) {
+            num_filosofos = valor;
+        }
+    }
+
+    if (argc > 3) {
+        printf("Uso: %s [duracion_segundos] [cantidad_filosofos]\n", argv[0]);
+        printf("Ejemplo: %s 20 7\n", argv[0]);
+        return 1;
+    }
+
+    palillos = (my_mutex*)malloc(sizeof(my_mutex) * num_filosofos);
+    estado = (int*)malloc(sizeof(int) * num_filosofos);
+
+    if (palillos == NULL || estado == NULL) {
+        printf("Error: no se pudo reservar memoria para la simulacion.\n");
+        free(palillos);
+        free(estado);
+        return 1;
+    }
+
+    pthread_t* hilos = (pthread_t*)malloc(sizeof(pthread_t) * num_filosofos);
+    int* ids = (int*)malloc(sizeof(int) * num_filosofos);
+
+    if (hilos == NULL || ids == NULL) {
+        printf("Error: no se pudo reservar memoria para hilos.\n");
+        free(palillos);
+        free(estado);
+        free(hilos);
+        free(ids);
+        return 1;
+    }
 
     // Inicializar palillos
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < num_filosofos; i++) {
         my_mutex_init(&palillos[i]);
     }
 
@@ -135,20 +183,47 @@ int main() {
     my_mutex_init(&print_lock);
 
     // Inicializar estados
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < num_filosofos; i++) {
         estado[i] = 0;
     }
 
+    inicio_programa = time(NULL);
+
+    printf("Iniciando simulacion de filosofos por %d segundos...\n", duracion_segundos);
+    printf("Cantidad de filosofos: %d\n", num_filosofos);
+    printf("Estados posibles: PENSANDO | HAMBRIENTO | COMIENDO\n");
+    printf("Uso: %s [duracion_segundos] [cantidad_filosofos]\n", argv[0]);
+    printf("==================================================\n");
+
     // Crear hilos
-    for (int i = 0; i < N; i++) {
+    for (int i = 0; i < num_filosofos; i++) {
         ids[i] = i;
         pthread_create(&hilos[i], NULL, filosofo, &ids[i]);
     }
 
-    // Esperar hilos (infinito)
-    for (int i = 0; i < N; i++) {
+    // Esperar hasta cumplir la duracion configurada
+    while ((time(NULL) - inicio_programa) < duracion_segundos) {
+        for (volatile long i = 0; i < 15000000; i++);
+    }
+
+    ejecutando = 0;
+
+    my_mutex_lock(&print_lock);
+    printf("\nTiempo cumplido (%d s). Cerrando simulacion...\n", duracion_segundos);
+    printf("==================================================\n");
+    my_mutex_unlock(&print_lock);
+
+    // Esperar hilos
+    for (int i = 0; i < num_filosofos; i++) {
         pthread_join(hilos[i], NULL);
     }
+
+    printf("Simulacion finalizada correctamente.\n");
+
+    free(hilos);
+    free(ids);
+    free(palillos);
+    free(estado);
 
     return 0;
 }
